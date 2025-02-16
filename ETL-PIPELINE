@@ -1,0 +1,151 @@
+# Mutual Fund ETL Pipeline
+
+### Folder Structure
+```
+project-root/
+    ├── glue_jobs/
+    │    └── mutual_fund_etl.py
+    ├── lambda/
+    │    └── lambda_trigger_glue.py
+    ├── snowflake_sql/
+    │    └── create_tables.sql
+    │    └── copy_data.sql
+    │    └── audit_log.sql
+    └── README.md
+```
+---
+
+## glue_jobs/mutual_fund_etl.py
+```python
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql.functions import col
+
+# Get job parameters
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = glueContext.create_dynamic_frame.from_catalog(database="mutual_fund_db", table_name="raw_mutual_fund")
+
+# Convert DynamicFrame to DataFrame for transformation
+df = job.toDF()
+
+# Data Cleaning and Validation
+df_cleaned = (
+    df.filter(col("amount").isNotNull())  # Remove rows with null 'amount'
+    .withColumn("date", col("date").cast("date"))  # Convert 'date' column to Date type
+)
+
+# Log bad records (e.g., rows with null 'amount')
+df_bad_records = df.filter(col("amount").isNull())
+df_bad_records.write.csv("s3://mutual-fund-data/bad-records/", mode="append")
+
+# Write cleaned data back to S3 in Parquet format
+df_cleaned.write.parquet("s3://mutual-fund-data/processed/", mode="overwrite")
+
+print("ETL job completed successfully.")
+```
+
+---
+
+## lambda/lambda_trigger_glue.py
+```python
+import boto3
+
+def lambda_handler(event, context):
+    glue_client = boto3.client('glue')
+    
+    try:
+        # Start the Glue job
+        response = glue_client.start_job_run(JobName='mutual_fund_etl')
+        print(f"Glue job started successfully: {response['JobRunId']}")
+        return {
+            'statusCode': 200,
+            'body': f"Glue job started: {response['JobRunId']}"
+        }
+    except Exception as e:
+        print(f"Error starting Glue job: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': f"Error: {str(e)}"
+        }
+```
+
+---
+
+## snowflake_sql/create_tables.sql
+```sql
+CREATE TABLE mutual_fund_data (
+    transaction_id INT,
+    customer_id INT,
+    fund_name STRING,
+    amount FLOAT,
+    date DATE
+);
+```
+
+---
+
+## snowflake_sql/copy_data.sql
+```sql
+COPY INTO mutual_fund_data
+FROM '@mutual_fund_stage/processed/'
+FILE_FORMAT = (TYPE = 'PARQUET');
+```
+
+---
+
+## snowflake_sql/audit_log.sql
+```sql
+CREATE TABLE etl_audit_log (
+    job_id STRING,
+    status STRING,
+    records_processed INT,
+    error_message STRING,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP
+);
+```
+
+---
+
+## README.md
+```markdown
+# Mutual Fund ETL Pipeline
+
+## Project Overview
+This project demonstrates an end-to-end ETL pipeline for mutual fund data using AWS services and Snowflake.
+
+### Architecture
+1. **AWS S3:** Used for storing raw and processed data.
+2. **AWS Glue:** Used for data transformation (PySpark job).
+3. **AWS Lambda:** Used to trigger the Glue job automatically.
+4. **Snowflake:** Used as the final data warehouse for analysis.
+
+### Steps
+1. Upload raw data to S3.
+2. AWS Lambda triggers the Glue job.
+3. Glue job processes the data and writes it back to S3 in Parquet format.
+4. Snowflake loads the cleaned data for analysis.
+5. Use SQL queries for reporting and data analysis.
+
+### Files
+- **glue_jobs/mutual_fund_etl.py:** Glue job for data transformation.
+- **lambda/lambda_trigger_glue.py:** Lambda function to trigger the Glue job.
+- **snowflake_sql/create_tables.sql:** SQL script to create tables in Snowflake.
+- **snowflake_sql/copy_data.sql:** SQL script to load data from S3 into Snowflake.
+- **snowflake_sql/audit_log.sql:** SQL script to create an audit log table in Snowflake.
+
+### How to Run
+1. Upload your raw mutual fund CSV data to the S3 bucket.
+2. AWS Lambda will automatically trigger the Glue job.
+3. After the Glue job completes, run the Snowflake SQL scripts to load and analyze data.
+```
+
+---
+Let me know if you want any additional files or enhancements to this project! 😊
